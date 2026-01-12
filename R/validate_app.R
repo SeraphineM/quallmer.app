@@ -413,12 +413,12 @@ humancheck_server <- function(
         if (isTRUE(blind())) {
           coded <- nzchar(df$comments_manual) |
             nzchar(df$examples_manual) |
-            !is.na(df$score) |
-            !is.na(df$revised_score)
+            !is.na(df$score)
         } else {
           coded <- nzchar(df$comments_llm) |
             nzchar(df$examples_llm) |
-            !(df$status %in% c("", "Unmarked"))
+            !(df$status %in% c("", "Unmarked")) |
+            !is.na(df$revised_score)
         }
         start_idx <- if (is.finite(saved_last) && !is.na(saved_last)) {
           max(1L, min(saved_last, n))
@@ -510,15 +510,15 @@ humancheck_server <- function(
     # Mode-specific fields (score vs status)
     output$mode_fields <- renderUI({
       if (isTRUE(blind())) {
-        tagList(
-          numericInput(ns("score"), "Score", value = NA, step = 1),
-          numericInput(ns("revised_score"), "Revised Score", value = NA, step = 1)
-        )
+        numericInput(ns("score"), "Score", value = NA, step = 1)
       } else {
-        radioButtons(
-          ns("status_sel"), "Status",
-          choices  = c("Valid", "Invalid", "Unmarked"),
-          selected = "Unmarked", inline = TRUE
+        tagList(
+          radioButtons(
+            ns("status_sel"), "Status",
+            choices  = c("Valid", "Invalid", "Unmarked"),
+            selected = "Unmarked", inline = TRUE
+          ),
+          numericInput(ns("revised_score"), "Revised Score", value = NA, step = 1)
         )
       }
     })
@@ -583,10 +583,6 @@ humancheck_server <- function(
           session, "score",
           value = suppressWarnings(as.numeric(rv$df$score[i]))
         )
-        updateNumericInput(
-          session, "revised_score",
-          value = suppressWarnings(as.numeric(rv$df$revised_score[i]))
-        )
       } else {
         updateTextAreaInput(
           session, "comments",
@@ -599,6 +595,10 @@ humancheck_server <- function(
         updateRadioButtons(
           session, "status_sel",
           selected = na_to_empty(rv$df$status[i] %||% "Unmarked")
+        )
+        updateNumericInput(
+          session, "revised_score",
+          value = suppressWarnings(as.numeric(rv$df$revised_score[i]))
         )
       }
       output$progress_ui <- renderUI({
@@ -643,7 +643,7 @@ humancheck_server <- function(
     }, ignoreInit = TRUE)
 
     observeEvent(input$revised_score, {
-      if (!isTRUE(blind()) || is.null(rv$df)) return()
+      if (isTRUE(blind()) || is.null(rv$df)) return()
       i <- current_index()
       rv$df$revised_score[i] <- suppressWarnings(as.numeric(input$revised_score))
       save_now()
