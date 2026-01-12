@@ -145,12 +145,21 @@ humancheck_ui <- function(id) {
           padding: 0 2px;
         }
       ")),
-      # Arrow keys + Enter to search-next
+      # Arrow keys + Enter to search-next (with debounce to prevent stuck scrolling)
       tags$script(HTML(sprintf("
-        document.addEventListener('keydown', function(e) {
-          if (e.key === 'ArrowRight') Shiny.setInputValue('%s', Math.random());
-          if (e.key === 'ArrowLeft') Shiny.setInputValue('%s', Math.random());
-        });
+        (function() {
+          var lastKeyTime = 0;
+          var debounceMs = 150;
+          document.addEventListener('keydown', function(e) {
+            var now = Date.now();
+            if (now - lastKeyTime < debounceMs) return;
+            if (document.activeElement.tagName === 'INPUT' ||
+                document.activeElement.tagName === 'TEXTAREA') return;
+            lastKeyTime = now;
+            if (e.key === 'ArrowRight') Shiny.setInputValue('%s', Math.random());
+            if (e.key === 'ArrowLeft') Shiny.setInputValue('%s', Math.random());
+          });
+        })();
         $(document).on('keydown', '#%s', function(e){
           if (e.key === 'Enter') {
             e.preventDefault();
@@ -259,7 +268,7 @@ humancheck_server <- function(
         df         = rv$df
       )
       ok <- tryCatch({
-        saveRDS(payload, tmp, compress = "xz")
+        saveRDS(payload, tmp, compress = "gzip")  # gzip is much faster than xz
         if (!file.rename(tmp, sp)) {
           if (file.copy(tmp, sp, overwrite = TRUE)) {
             unlink(tmp)
@@ -317,6 +326,9 @@ humancheck_server <- function(
         if (!"score" %in% names(df)) {
           df$score <- rep(NA_real_, n)
         }
+        if (!"revised_score" %in% names(df)) {
+          df$revised_score <- rep(NA_real_, n)
+        }
 
         # Merge saved progress (safe, no unknown column warnings)
         saved_last <- NA_integer_
@@ -333,7 +345,7 @@ humancheck_server <- function(
                 "comments_manual", "examples_manual",
                 "comments_llm",    "examples_llm",
                 "comments",        "examples",  # legacy
-                "status",          "score"
+                "status",          "score",     "revised_score"
               ),
               names(saved_df)
             )
@@ -380,6 +392,13 @@ humancheck_server <- function(
                 getm("score")
               )
             }
+            if ("revised_score.saved" %in% names(m)) {
+              df$revised_score <- dplyr::coalesce(
+                getm("revised_score.saved"),
+                df$revised_score,
+                getm("revised_score")
+              )
+            }
           }
           if (is.list(saved) && is.numeric(saved$last_index)) {
             saved_last <- as.integer(saved$last_index)
@@ -394,7 +413,8 @@ humancheck_server <- function(
         if (isTRUE(blind())) {
           coded <- nzchar(df$comments_manual) |
             nzchar(df$examples_manual) |
-            !is.na(df$score)
+            !is.na(df$score) |
+            !is.na(df$revised_score)
         } else {
           coded <- nzchar(df$comments_llm) |
             nzchar(df$examples_llm) |
@@ -490,7 +510,10 @@ humancheck_server <- function(
     # Mode-specific fields (score vs status)
     output$mode_fields <- renderUI({
       if (isTRUE(blind())) {
-        numericInput(ns("score"), "Score", value = NA, step = 1)
+        tagList(
+          numericInput(ns("score"), "Score", value = NA, step = 1),
+          numericInput(ns("revised_score"), "Revised Score", value = NA, step = 1)
+        )
       } else {
         radioButtons(
           ns("status_sel"), "Status",
@@ -560,6 +583,10 @@ humancheck_server <- function(
           session, "score",
           value = suppressWarnings(as.numeric(rv$df$score[i]))
         )
+        updateNumericInput(
+          session, "revised_score",
+          value = suppressWarnings(as.numeric(rv$df$revised_score[i]))
+        )
       } else {
         updateTextAreaInput(
           session, "comments",
@@ -612,6 +639,13 @@ humancheck_server <- function(
       if (!isTRUE(blind()) || is.null(rv$df)) return()
       i <- current_index()
       rv$df$score[i] <- suppressWarnings(as.numeric(input$score))
+      save_now()
+    }, ignoreInit = TRUE)
+
+    observeEvent(input$revised_score, {
+      if (!isTRUE(blind()) || is.null(rv$df)) return()
+      i <- current_index()
+      rv$df$revised_score[i] <- suppressWarnings(as.numeric(input$revised_score))
       save_now()
     }, ignoreInit = TRUE)
 
@@ -670,14 +704,14 @@ humancheck_server <- function(
         save_now()
         move_and_refresh(current_index() + 1L)
       }
-    })
+    }, ignoreInit = TRUE)
 
     observeEvent(input$prev_text, {
       if (!is.null(rv$n) && current_index() > 1L) {
         save_now()
         move_and_refresh(current_index() - 1L)
       }
-    })
+    }, ignoreInit = TRUE)
 
     observeEvent(input$manual_save, ignoreInit = TRUE, handlerExpr = save_now)
 
